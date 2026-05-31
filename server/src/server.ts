@@ -21,25 +21,25 @@ async function main() {
   });
 
   io.on('connection', (socket) => {
-    // eslint-disable-next-line no-console
     console.log('User connected:', socket.id);
     socket.emit('server:hello', { message: 'connected' });
   });
 
-  const port = env.PORT;
+  // fallback for Render PORT
+  const port = env.PORT || 4000;
+
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, () => resolve());
   });
-  // eslint-disable-next-line no-console
-  console.log(`API running on http://localhost:${port}`);
+
+  // optional small fix (log)
+  console.log(`API running on port ${port}`);
 }
 
 main().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error(err);
   process.exit(1);
 });
 
 export { io };
-
