@@ -2,6 +2,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { UserModel } from '../models/User.model.js';
 import { env } from '../config/env.js';
+import { validateEmail, validatePassword } from '../utils/validation.js';
 function getJwtSecret(res) {
     const secret = env.JWT_SECRET.trim();
     if (!secret) {
@@ -21,12 +22,17 @@ export async function register(req, res, next) {
         const secret = getJwtSecret(res);
         if (!secret)
             return;
-        const { email, password } = req.body ?? {};
-        if (typeof email !== 'string' || typeof password !== 'string') {
-            return res.status(400).json({ message: 'Invalid body' });
+        const emailValidation = validateEmail(req.body?.email);
+        if (emailValidation.error || !emailValidation.email) {
+            return res.status(400).json({ message: emailValidation.error ?? 'Email is required' });
         }
+        const passwordError = validatePassword(req.body?.password);
+        if (passwordError) {
+            return res.status(400).json({ message: passwordError });
+        }
+        const password = req.body.password;
         const user = await UserModel.create({
-            email,
+            email: emailValidation.email,
             password,
             role: 'user',
         });
@@ -48,11 +54,16 @@ export async function login(req, res, next) {
         const secret = getJwtSecret(res);
         if (!secret)
             return;
-        const { email, password } = req.body ?? {};
-        if (typeof email !== 'string' || typeof password !== 'string') {
-            return res.status(400).json({ message: 'Invalid body' });
+        const emailValidation = validateEmail(req.body?.email);
+        if (emailValidation.error || !emailValidation.email) {
+            return res.status(400).json({ message: emailValidation.error ?? 'Email is required' });
         }
-        const user = await UserModel.findOne({ email: email.toLowerCase().trim() });
+        const passwordError = validatePassword(req.body?.password);
+        if (passwordError) {
+            return res.status(400).json({ message: passwordError });
+        }
+        const password = req.body.password;
+        const user = await UserModel.findOne({ email: emailValidation.email });
         if (!user) {
             return res.status(401).json({ message: 'Invalid credentials' });
         }

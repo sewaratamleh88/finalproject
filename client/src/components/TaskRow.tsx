@@ -1,4 +1,6 @@
 import type { Task } from '../types/task'
+import { canEditTask } from '../utils/taskEdit'
+import { getTaskStatusDisplay } from '../utils/taskStatusDisplay'
 
 type TaskRowProps = {
   task: Task
@@ -7,6 +9,7 @@ type TaskRowProps = {
   isAdmin?: boolean
   onOpenReview?: () => void
   onRework?: () => void
+  onEdit?: () => void
   toggleDisabled: boolean
   deleteDisabled: boolean
 }
@@ -18,11 +21,7 @@ function priorityLabel(priority: Task['priority']): string {
 }
 
 function reviewStatusLabel(task: Task) {
-  if (task.status === 'done' || (!task.status && task.completed))
-    return { text: 'Done', cls: 'tf-status tf-status-done' }
-  if (task.status === 'approved') return { text: 'Approved', cls: 'tf-status tf-status-approved' }
-  if (task.status === 'rejected') return { text: 'Rejected', cls: 'tf-status tf-status-rejected' }
-  return null
+  return getTaskStatusDisplay(task)
 }
 
 export function TaskRow({
@@ -32,6 +31,7 @@ export function TaskRow({
   isAdmin,
   onOpenReview,
   onRework,
+  onEdit,
   toggleDisabled,
   deleteDisabled,
 }: TaskRowProps) {
@@ -46,6 +46,7 @@ export function TaskRow({
   const isReviewed = task.status === 'approved' || task.status === 'rejected'
   const canDelete = !isAdmin && task.status === 'approved'
   const canRework = !isAdmin && task.status === 'rejected'
+  const canEdit = !isAdmin && canEditTask(task)
 
   const cardInner = (
     <>
@@ -59,15 +60,29 @@ export function TaskRow({
           ) : null}
         </div>
         {!isAdmin ? (
-          canDelete ? (
-            <button
-              type="button"
-              className="task-delete"
-              disabled={deleteDisabled}
-              onClick={onDelete}
-            >
-              Delete
-            </button>
+          canEdit || canDelete ? (
+            <div className="tf-task-card-actions">
+              {canEdit && onEdit ? (
+                <button
+                  type="button"
+                  className="task-edit"
+                  disabled={deleteDisabled}
+                  onClick={onEdit}
+                >
+                  Edit
+                </button>
+              ) : null}
+              {canDelete ? (
+                <button
+                  type="button"
+                  className="task-delete"
+                  disabled={deleteDisabled}
+                  onClick={onDelete}
+                >
+                  Delete
+                </button>
+              ) : null}
+            </div>
           ) : null
         ) : (
           <span className="tf-review-open-hint">Click to review</span>

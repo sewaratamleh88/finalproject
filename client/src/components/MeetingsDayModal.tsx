@@ -4,7 +4,9 @@ type MeetingsDayModalProps = {
   date: string // YYYY-MM-DD
   meetings: MeetingDto[]
   onSelectMeeting: (m: MeetingDto) => void
+  onDeleteMeeting?: (m: MeetingDto) => void
   onClose: () => void
+  isDeleting?: boolean
 }
 
 function formatDate(dateStr: string) {
@@ -21,7 +23,9 @@ export function MeetingsDayModal({
   date,
   meetings,
   onSelectMeeting,
+  onDeleteMeeting,
   onClose,
+  isDeleting = false,
 }: MeetingsDayModalProps) {
   const prettyDate = formatDate(date)
 
@@ -57,20 +61,32 @@ export function MeetingsDayModal({
           ) : (
             <div className="tf-meetings-day-list" role="list">
               {meetings.map((m) => (
-                <button
-                  key={m._id}
-                  type="button"
-                  className="tf-meetings-day-item"
-                  onClick={() => onSelectMeeting(m)}
-                  aria-label={`Edit meeting: ${m.title}`}
-                >
-                  <div className="tf-meetings-day-title">
-                    {m.title?.trim() ? m.title : 'Untitled'}
-                  </div>
-                  <div className="tf-meetings-day-meta">
-                    {m.time?.trim() ? m.time : '—'}
-                  </div>
-                </button>
+                <div key={m._id} className="tf-meetings-day-item" role="listitem">
+                  <button
+                    type="button"
+                    className="tf-meetings-day-item-main"
+                    onClick={() => onSelectMeeting(m)}
+                    aria-label={`Edit meeting: ${m.title}`}
+                  >
+                    <div className="tf-meetings-day-title">
+                      {m.title?.trim() ? m.title : 'Untitled'}
+                    </div>
+                    <div className="tf-meetings-day-meta">
+                      {m.time?.trim() ? m.time : '—'}
+                    </div>
+                  </button>
+                  {onDeleteMeeting ? (
+                    <button
+                      type="button"
+                      className="tf-meetings-day-delete"
+                      onClick={() => onDeleteMeeting(m)}
+                      disabled={isDeleting}
+                      aria-label={`Delete meeting: ${m.title}`}
+                    >
+                      Delete
+                    </button>
+                  ) : null}
+                </div>
               ))}
             </div>
           )}

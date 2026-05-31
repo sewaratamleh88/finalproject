@@ -1,4 +1,5 @@
 import type { Task } from '../types/task'
+import { getTaskStatusDisplay } from '../utils/taskStatusDisplay'
 
 type TaskReviewModalProps = {
   task: Task
@@ -24,6 +25,8 @@ export function TaskReviewModal({
   onClose,
   isPending,
 }: TaskReviewModalProps) {
+  const statusDisplay = getTaskStatusDisplay(task)
+
   return (
     <div
       className="tf-modal-backdrop"
@@ -70,7 +73,9 @@ export function TaskReviewModal({
               <div className="tf-review-meta-value">{creatorEmail(task)}</div>
             </div>
             <div className="tf-review-meta-item tf-review-meta-right">
-              <span className="tf-status tf-status-done">Done</span>
+              {statusDisplay ? (
+                <span className={statusDisplay.cls}>{statusDisplay.text}</span>
+              ) : null}
             </div>
           </div>
 

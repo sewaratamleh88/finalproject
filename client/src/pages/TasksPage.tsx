@@ -13,8 +13,41 @@ import { TaskReviewModal } from '../components/TaskReviewModal'
 import { TasksPageHeader } from '../components/TasksPageHeader'
 import { useAuth } from '../hooks/useAuth'
 import type { Task, TaskPriority, TaskStatus } from '../types/task'
+import type { HistoryFilter } from '../utils/historyFilter'
+import { matchesHistoryFilter } from '../utils/historyFilter'
+import { canEditTask, resolveTaskStatus } from '../utils/taskEdit'
 
 const TASKS_KEY = ['tasks'] as const
+
+type DeletedTaskRecord = Task & { deletedAt: string }
+
+const DELETED_HISTORY_KEY_PREFIX = 'tf:tasks:deletedHistory'
+
+function deletedHistoryStorageKey(userId: string) {
+  return `${DELETED_HISTORY_KEY_PREFIX}:${userId}`
+}
+
+function readDeletedHistory(userId: string): DeletedTaskRecord[] {
+  try {
+    const raw = localStorage.getItem(deletedHistoryStorageKey(userId))
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (item): item is DeletedTaskRecord =>
+        typeof item === 'object' &&
+        item !== null &&
+        typeof (item as DeletedTaskRecord)._id === 'string' &&
+        typeof (item as DeletedTaskRecord).deletedAt === 'string',
+    )
+  } catch {
+    return []
+  }
+}
+
+function writeDeletedHistory(userId: string, items: DeletedTaskRecord[]) {
+  localStorage.setItem(deletedHistoryStorageKey(userId), JSON.stringify(items))
+}
 
 export function TasksPage() {
   const { user, logout } = useAuth()
@@ -28,6 +61,7 @@ export function TasksPage() {
     'all',
   )
   const [isNewTaskOpen, setIsNewTaskOpen] = useState(false)
+  const [editTask, setEditTask] = useState<Task | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [reviewTask, setReviewTask] = useState<Task | null>(null)
   const [reviewComment, setReviewComment] = useState('')
@@ -35,6 +69,9 @@ export function TasksPage() {
   const [allUsers, setAllUsers] = useState<Array<{ id: string; label: string }>>(
     [],
   )
+  const [showHistory, setShowHistory] = useState(false)
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
+  const [deletedHistory, setDeletedHistory] = useState<DeletedTaskRecord[]>([])
 
   const tasksQuery = useQuery<Task[]>({
     queryKey: [...TASKS_KEY, { userId: user?.role === 'admin' ? selectedUserId : 'me' }] as const,
@@ -46,6 +83,12 @@ export function TasksPage() {
       ),
   })
 
+  useEffect(() => {
+    if (!user?.id) return
+    const t = setTimeout(() => setDeletedHistory(readDeletedHistory(user.id)), 0)
+    return () => clearTimeout(t)
+  }, [user?.id])
+
   const createMut = useMutation({
     mutationFn: () =>
       createTask({
@@ -55,11 +98,28 @@ export function TasksPage() {
         status: taskStatus,
       }),
     onSuccess: () => {
-      setTitle('')
-      setDescription('')
-      setPriority('medium')
-      setTaskStatus('todo')
+      resetTaskForm()
       setIsNewTaskOpen(false)
+      void queryClient.invalidateQueries({ queryKey: TASKS_KEY })
+    },
+  })
+
+  const updateMut = useMutation({
+    mutationFn: ({
+      id,
+      input,
+    }: {
+      id: string
+      input: {
+        title: string
+        description?: string
+        priority: TaskPriority
+        status?: TaskStatus
+      }
+    }) => updateTask(id, input),
+    onSuccess: () => {
+      resetTaskForm()
+      setEditTask(null)
       void queryClient.invalidateQueries({ queryKey: TASKS_KEY })
     },
   })
@@ -128,9 +188,18 @@ export function TasksPage() {
   })
 
   const deleteMut = useMutation({
-    mutationFn: (id: string) => deleteTask(id),
-    onSuccess: () => {
+    mutationFn: (task: Task) => deleteTask(task._id),
+    onSuccess: (_data, task) => {
       setDeleteError(null)
+      if (!user?.id) return
+      setDeletedHistory((prev) => {
+        const next: DeletedTaskRecord[] = [
+          { ...task, deletedAt: new Date().toISOString() },
+          ...prev,
+        ]
+        writeDeletedHistory(user.id, next)
+        return next
+      })
       void queryClient.invalidateQueries({ queryKey: TASKS_KEY })
     },
     onError: (err: unknown) => {
@@ -142,10 +211,62 @@ export function TasksPage() {
     },
   })
 
+  function resetTaskForm() {
+    setTitle('')
+    setDescription('')
+    setPriority('medium')
+    setTaskStatus('todo')
+  }
+
   function handleAdd(e: React.FormEvent) {
     e.preventDefault()
     if (!title.trim()) return
     createMut.mutate()
+  }
+
+  function openEdit(task: Task) {
+    if (!canEditTask(task)) return
+    setIsNewTaskOpen(false)
+    setEditTask(task)
+    setTitle(task.title)
+    setDescription(task.description ?? '')
+    setPriority(task.priority)
+    setTaskStatus(resolveTaskStatus(task) === 'rejected' ? 'todo' : resolveTaskStatus(task))
+  }
+
+  function closeEdit() {
+    if (updateMut.isPending) return
+    setEditTask(null)
+    resetTaskForm()
+  }
+
+  function closeNewTask() {
+    if (createMut.isPending) return
+    setIsNewTaskOpen(false)
+    resetTaskForm()
+  }
+
+  function handleEditSave(e: React.FormEvent) {
+    e.preventDefault()
+    if (!editTask || !title.trim()) return
+
+    const status = resolveTaskStatus(editTask)
+    const input: {
+      title: string
+      description?: string
+      priority: TaskPriority
+      status?: TaskStatus
+    } = {
+      title: title.trim(),
+      description: description.trim() || undefined,
+      priority,
+    }
+
+    if (status === 'todo') {
+      input.status = taskStatus
+    }
+
+    updateMut.mutate({ id: editTask._id, input })
   }
 
   const tasks = tasksQuery.data ?? []
@@ -191,6 +312,9 @@ export function TasksPage() {
     priorityFilter === 'all'
       ? searchFilteredTasks
       : searchFilteredTasks.filter((t) => t.priority === priorityFilter)
+  const filteredDeletedHistory = deletedHistory.filter((t) =>
+    matchesHistoryFilter(t.deletedAt, historyFilter),
+  )
   const showEmpty =
     !tasksQuery.isLoading &&
     !tasksQuery.isError &&
@@ -208,7 +332,7 @@ export function TasksPage() {
 
   function handleDelete(task: Task) {
     setDeleteError(null)
-    deleteMut.mutate(task._id)
+    deleteMut.mutate(task)
   }
 
   function handleRework(task: Task) {
@@ -236,7 +360,7 @@ export function TasksPage() {
   }
 
   useEffect(() => {
-    if (!isNewTaskOpen && !reviewTask) return
+    if (!isNewTaskOpen && !editTask && !reviewTask) return
     function onKeyDown(e: KeyboardEvent) {
       if (e.key !== 'Escape') return
       if (reviewTask) {
@@ -244,16 +368,28 @@ export function TasksPage() {
           setReviewTask(null)
           setReviewComment('')
         }
+      } else if (editTask) {
+        closeEdit()
       } else {
-        setIsNewTaskOpen(false)
+        closeNewTask()
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [isNewTaskOpen, reviewTask, reviewMut.isPending])
+  }, [isNewTaskOpen, editTask, reviewTask, reviewMut.isPending, updateMut.isPending, createMut.isPending])
 
   const totalCount = tasks.length
   const visibleCount = filteredTasks.length
+
+  function formatDeletedDate(iso: string) {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return iso
+    return new Intl.DateTimeFormat('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }).format(d)
+  }
 
   return (
     <div className="tasks-page tf-tasks">
@@ -274,7 +410,11 @@ export function TasksPage() {
           <button
             type="button"
             className="tf-btn-hero"
-            onClick={() => setIsNewTaskOpen(true)}
+            onClick={() => {
+              setEditTask(null)
+              resetTaskForm()
+              setIsNewTaskOpen(true)
+            }}
           >
             + New Task
           </button>
@@ -325,11 +465,11 @@ export function TasksPage() {
         ) : null}
       </div>
 
-      {user?.role !== 'admin' && isNewTaskOpen ? (
+      {user?.role !== 'admin' && (isNewTaskOpen || editTask) ? (
         <div
           className="tf-modal-backdrop"
           role="presentation"
-          onClick={() => setIsNewTaskOpen(false)}
+          onClick={() => (editTask ? closeEdit() : closeNewTask())}
         >
           <div
             className="tf-modal-dialog"
@@ -347,10 +487,12 @@ export function TasksPage() {
               onDescriptionChange={setDescription}
               onPriorityChange={setPriority}
               onStatusChange={setTaskStatus}
-              onSubmit={handleAdd}
-              isPending={createMut.isPending}
-              showCreateError={createMut.isError}
-              onCancel={() => setIsNewTaskOpen(false)}
+              onSubmit={editTask ? handleEditSave : handleAdd}
+              isPending={editTask ? updateMut.isPending : createMut.isPending}
+              showCreateError={editTask ? updateMut.isError : createMut.isError}
+              onCancel={() => (editTask ? closeEdit() : closeNewTask())}
+              formTitle={editTask ? 'Edit Task' : 'New Task'}
+              showStatusSelect={!editTask || resolveTaskStatus(editTask) === 'todo'}
             />
           </div>
         </div>
@@ -378,10 +520,85 @@ export function TasksPage() {
         onDelete={handleDelete}
         onOpenReview={user?.role === 'admin' ? openReview : undefined}
         onRework={user?.role !== 'admin' ? handleRework : undefined}
+        onEdit={user?.role !== 'admin' ? openEdit : undefined}
         isAdmin={user?.role === 'admin'}
         toggleDisabled={toggleMut.isPending}
-        deleteDisabled={deleteMut.isPending || reviewMut.isPending || reworkMut.isPending}
+        deleteDisabled={
+          deleteMut.isPending ||
+          reviewMut.isPending ||
+          reworkMut.isPending ||
+          updateMut.isPending
+        }
       />
+
+      {user?.role !== 'admin' ? (
+        <div className="tf-history-toggle-row">
+          <button
+            type="button"
+            className="tf-btn-ghost tf-history-toggle"
+            onClick={() => setShowHistory((v) => !v)}
+            aria-expanded={showHistory}
+          >
+            {showHistory ? 'Hide History' : 'Show History'}
+          </button>
+        </div>
+      ) : null}
+
+      {user?.role !== 'admin' && showHistory ? (
+        <section
+          className="tasks-section tf-panel tf-history-panel"
+          aria-labelledby="tf-deleted-tasks-title"
+        >
+          <div className="tf-history-head">
+            <h2 id="tf-deleted-tasks-title" className="tf-history-title">
+              Task History
+            </h2>
+            <p className="tf-history-sub">
+              {filteredDeletedHistory.length} deleted task
+              {filteredDeletedHistory.length === 1 ? '' : 's'}
+            </p>
+          </div>
+          <div className="tf-history-filter" role="group" aria-label="Filter history by time">
+            <button
+              type="button"
+              className={`tf-history-filter-btn${historyFilter === 'month' ? ' tf-history-filter-btn-active' : ''}`}
+              onClick={() => setHistoryFilter('month')}
+            >
+              Last Month
+            </button>
+            <button
+              type="button"
+              className={`tf-history-filter-btn${historyFilter === '3months' ? ' tf-history-filter-btn-active' : ''}`}
+              onClick={() => setHistoryFilter('3months')}
+            >
+              Last 3 Months
+            </button>
+            <button
+              type="button"
+              className={`tf-history-filter-btn${historyFilter === 'all' ? ' tf-history-filter-btn-active' : ''}`}
+              onClick={() => setHistoryFilter('all')}
+            >
+              All
+            </button>
+          </div>
+          {filteredDeletedHistory.length === 0 ? (
+            <p className="tf-col-empty">No deleted tasks in this period.</p>
+          ) : (
+            <ul className="tf-history-list">
+              {filteredDeletedHistory.map((t) => (
+                <li key={`${t._id}-${t.deletedAt}`}>
+                  <div className="tf-history-item">
+                    <span className="tf-history-item-title">{t.title}</span>
+                    <span className="tf-history-item-meta">
+                      Deleted {formatDeletedDate(t.deletedAt)}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : null}
     </div>
   )
 }

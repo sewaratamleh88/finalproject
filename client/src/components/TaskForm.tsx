@@ -14,6 +14,9 @@ type TaskFormProps = {
   isPending: boolean
   showCreateError: boolean
   onCancel?: () => void
+  formTitle?: string
+  submitLabel?: string
+  showStatusSelect?: boolean
 }
 
 export function TaskForm({
@@ -29,12 +32,18 @@ export function TaskForm({
   isPending,
   showCreateError,
   onCancel,
+  formTitle = 'New Task',
+  submitLabel,
+  showStatusSelect = true,
 }: TaskFormProps) {
+  const resolvedSubmitLabel =
+    submitLabel ?? (isPending ? 'Saving…' : formTitle === 'Edit Task' ? 'Save' : 'Add')
+
   return (
     <section id="tf-new-task" className="tasks-section tf-panel tf-new-task-panel">
       <div className="tf-new-task-head">
         <h2 id="tf-new-task-title" className="tasks-h2">
-          New Task
+          {formTitle}
         </h2>
         {onCancel ? (
           <button
@@ -67,14 +76,16 @@ export function TaskForm({
           <option value="medium">Medium</option>
           <option value="high">High</option>
         </select>
-        <select
-          value={status}
-          onChange={(e) => onStatusChange(e.target.value as TaskStatus)}
-          aria-label="Task status"
-        >
-          <option value="todo">To Do</option>
-          <option value="done">Done</option>
-        </select>
+        {showStatusSelect ? (
+          <select
+            value={status}
+            onChange={(e) => onStatusChange(e.target.value as TaskStatus)}
+            aria-label="Task status"
+          >
+            <option value="todo">To Do</option>
+            <option value="done">Done</option>
+          </select>
+        ) : null}
         <div className="tasks-form-actions">
           {onCancel ? (
             <button
@@ -91,7 +102,7 @@ export function TaskForm({
             className="tasks-form-submit"
             disabled={isPending}
           >
-            {isPending ? 'Saving…' : 'Add'}
+            {resolvedSubmitLabel}
           </button>
         </div>
       </form>

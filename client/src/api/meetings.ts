@@ -32,3 +32,7 @@ export async function updateMeeting(
   return res.data
 }
 
+export async function deleteMeeting(id: string): Promise<void> {
+  await http.delete(`/api/meetings/${id}`)
+}
+

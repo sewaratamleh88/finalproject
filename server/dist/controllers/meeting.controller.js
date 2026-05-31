@@ -1,40 +1,32 @@
 import { Meeting } from '../models/meeting.model.js';
-function toUtcDayStart(dateStr) {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
-    if (!m)
-        return null;
-    const y = Number(m[1]);
-    const mo = Number(m[2]);
-    const d = Number(m[3]);
-    if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d))
-        return null;
-    return new Date(Date.UTC(y, mo - 1, d, 0, 0, 0, 0));
-}
-function isPastDate(dateStr) {
-    const day = toUtcDayStart(dateStr);
-    if (!day)
-        return false;
-    const now = new Date();
-    const todayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
-    return day < todayUtc;
-}
+import { LIMITS, isPastDateYmd, validateDateYmd, validateOptionalDateYmd, validateOptionalTimeHm, validateRequiredString, } from '../utils/validation.js';
 export async function createMeeting(req, res, next) {
     try {
         const { title, date, time } = req.body ?? {};
         if (!req.user)
             return res.status(401).json({ message: 'Unauthorized' });
-        if (typeof title !== 'string' || typeof date !== 'string') {
-            return res.status(400).json({ message: 'Invalid body' });
+        const titleError = validateRequiredString(title, 'Title', {
+            min: 1,
+            max: LIMITS.meetingTitle,
+        });
+        if (titleError) {
+            return res.status(400).json({ message: titleError });
         }
-        if (time !== undefined && typeof time !== 'string') {
-            return res.status(400).json({ message: 'Invalid body' });
+        const dateError = validateDateYmd(date);
+        if (dateError) {
+            return res.status(400).json({ message: dateError });
         }
-        if (isPastDate(date)) {
+        const timeError = validateOptionalTimeHm(time);
+        if (timeError) {
+            return res.status(400).json({ message: timeError });
+        }
+        const normalizedDate = date.trim();
+        if (isPastDateYmd(normalizedDate)) {
             return res.status(400).json({ message: 'Cannot create a meeting in the past' });
         }
         const meeting = await Meeting.create({
-            title,
-            date,
+            title: title.trim(),
+            date: normalizedDate,
             time: typeof time === 'string' ? time.trim() : '',
             createdBy: req.user.id,
         });
@@ -59,14 +51,22 @@ export async function updateMeeting(req, res, next) {
         const { title, date, time } = req.body ?? {};
         if (!req.user)
             return res.status(401).json({ message: 'Unauthorized' });
-        if (title !== undefined && typeof title !== 'string') {
-            return res.status(400).json({ message: 'Invalid body' });
+        if (title !== undefined) {
+            const titleError = validateRequiredString(title, 'Title', {
+                min: 1,
+                max: LIMITS.meetingTitle,
+            });
+            if (titleError) {
+                return res.status(400).json({ message: titleError });
+            }
         }
-        if (date !== undefined && typeof date !== 'string') {
-            return res.status(400).json({ message: 'Invalid body' });
+        const dateError = validateOptionalDateYmd(date);
+        if (dateError) {
+            return res.status(400).json({ message: dateError });
         }
-        if (time !== undefined && typeof time !== 'string') {
-            return res.status(400).json({ message: 'Invalid body' });
+        const timeError = validateOptionalTimeHm(time);
+        if (timeError) {
+            return res.status(400).json({ message: timeError });
         }
         const existing = await Meeting.findById(id).lean();
         if (!existing)
@@ -74,17 +74,17 @@ export async function updateMeeting(req, res, next) {
         if (String(existing.createdBy) !== String(req.user.id)) {
             return res.status(403).json({ message: 'Forbidden' });
         }
-        if (isPastDate(existing.date)) {
+        if (isPastDateYmd(existing.date)) {
             return res.status(400).json({ message: 'Cannot edit past meetings' });
         }
-        if (date !== undefined && isPastDate(date)) {
+        if (date !== undefined && isPastDateYmd(date.trim())) {
             return res.status(400).json({ message: 'Cannot create a meeting in the past' });
         }
         const patch = {};
         if (title !== undefined)
-            patch.title = title;
+            patch.title = title.trim();
         if (date !== undefined)
-            patch.date = date;
+            patch.date = date.trim();
         if (time !== undefined)
             patch.time = time.trim();
         const updated = await Meeting.findByIdAndUpdate(id, patch, {
@@ -94,6 +94,24 @@ export async function updateMeeting(req, res, next) {
         if (!updated)
             return res.status(404).json({ message: 'Meeting not found' });
         res.json(updated);
+    }
+    catch (err) {
+        next(err);
+    }
+}
+export async function deleteMeeting(req, res, next) {
+    try {
+        const { id } = req.params;
+        if (!req.user)
+            return res.status(401).json({ message: 'Unauthorized' });
+        const existing = await Meeting.findById(id).lean();
+        if (!existing)
+            return res.status(404).json({ message: 'Meeting not found' });
+        if (String(existing.createdBy) !== String(req.user.id)) {
+            return res.status(403).json({ message: 'Forbidden' });
+        }
+        await Meeting.findByIdAndDelete(id);
+        res.status(204).send();
     }
     catch (err) {
         next(err);

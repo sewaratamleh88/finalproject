@@ -1,10 +1,6 @@
-import type { Task, TaskStatus } from '../types/task'
+import type { Task } from '../types/task'
+import { resolveTaskStatus } from '../utils/taskEdit'
 import { TaskRow } from './TaskRow'
-
-function resolveTaskStatus(task: Task): TaskStatus {
-  if (task.status) return task.status
-  return task.completed ? 'done' : 'todo'
-}
 
 type TaskListProps = {
   tasks: Task[]
@@ -17,6 +13,7 @@ type TaskListProps = {
   isAdmin?: boolean
   onOpenReview?: (task: Task) => void
   onRework?: (task: Task) => void
+  onEdit?: (task: Task) => void
   toggleDisabled: boolean
   deleteDisabled: boolean
 }
@@ -41,6 +38,7 @@ export function TaskList({
   isAdmin,
   onOpenReview,
   onRework,
+  onEdit,
   toggleDisabled,
   deleteDisabled,
 }: TaskListProps) {
@@ -72,6 +70,7 @@ export function TaskList({
               onDelete={() => onDelete(t)}
               onOpenReview={onOpenReview ? () => onOpenReview(t) : undefined}
               onRework={onRework ? () => onRework(t) : undefined}
+              onEdit={onEdit ? () => onEdit(t) : undefined}
               toggleDisabled={toggleDisabled}
               deleteDisabled={deleteDisabled}
             />

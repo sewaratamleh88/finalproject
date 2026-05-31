@@ -2,10 +2,12 @@ import { TasksPageHeader } from '../components/TasksPageHeader'
 import { useAuth } from '../hooks/useAuth'
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { createMeeting, getMeetings, updateMeeting, type MeetingDto } from '../api/meetings'
+import { createMeeting, deleteMeeting, getMeetings, updateMeeting, type MeetingDto } from '../api/meetings'
 import { MeetingEditModal } from '../components/MeetingEditModal'
 import { MeetingCreateModal } from '../components/MeetingCreateModal'
 import { MeetingsDayModal } from '../components/MeetingsDayModal'
+import type { HistoryFilter } from '../utils/historyFilter'
+import { matchesHistoryFilter } from '../utils/historyFilter'
 
 export function MeetingsPage() {
   const { user, logout } = useAuth()
@@ -31,6 +33,8 @@ export function MeetingsPage() {
   const [dayModalDate, setDayModalDate] = useState<string | null>(null)
   const [createServerError, setCreateServerError] = useState<string | null>(null)
   const [editServerError, setEditServerError] = useState<string | null>(null)
+  const [showHistory, setShowHistory] = useState(false)
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
 
   const MEETINGS_KEY = ['meetings'] as const
 
@@ -81,6 +85,13 @@ export function MeetingsPage() {
       } else {
         setEditServerError('Failed to update meeting.')
       }
+    },
+  })
+
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => deleteMeeting(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: MEETINGS_KEY })
     },
   })
 
@@ -183,6 +194,10 @@ export function MeetingsPage() {
     )
   }
 
+  function handleDeleteMeeting(m: MeetingDto) {
+    deleteMut.mutate(m._id)
+  }
+
   function handleAddSubmit() {
     const date = newMeetingDate
     const title = newMeetingTitle.trim()
@@ -200,6 +215,28 @@ export function MeetingsPage() {
         },
       },
     )
+  }
+
+  const meetings = meetingsQuery.data ?? []
+  const activeMeetings = meetings.filter((m) => !isPastDate(m.date))
+  const pastMeetings = meetings
+    .filter((m) => isPastDate(m.date))
+    .sort(
+      (a, b) =>
+        b.date.localeCompare(a.date) || (a.time ?? '').localeCompare(b.time ?? ''),
+    )
+  const filteredPastMeetings = pastMeetings.filter((m) =>
+    matchesHistoryFilter(m.date, historyFilter),
+  )
+
+  function formatMeetingDate(dateStr: string) {
+    const d = new Date(`${dateStr}T00:00:00`)
+    if (Number.isNaN(d.getTime())) return dateStr
+    return new Intl.DateTimeFormat('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }).format(d)
   }
 
   return (
@@ -267,7 +304,7 @@ export function MeetingsPage() {
             >
               <div className="tf-calendar-day">{day}</div>
               <div className="tf-calendar-meetings">
-                {(meetingsQuery.data ?? [])
+                {activeMeetings
                   .filter((m) => m.date === dateKey(day))
                   .map((m) => (
                     <button
@@ -289,14 +326,95 @@ export function MeetingsPage() {
         </div>
       </section>
 
+      <div className="tf-history-toggle-row">
+        <button
+          type="button"
+          className="tf-btn-ghost tf-history-toggle"
+          onClick={() => setShowHistory((v) => !v)}
+          aria-expanded={showHistory}
+        >
+          {showHistory ? 'Hide History' : 'Show History'}
+        </button>
+      </div>
+
+      {showHistory ? (
+      <section
+        className="tasks-section tf-panel tf-history-panel"
+        aria-labelledby="tf-past-meetings-title"
+      >
+        <div className="tf-history-head">
+          <h2 id="tf-past-meetings-title" className="tf-history-title">
+            Past Meetings
+          </h2>
+          <p className="tf-history-sub">
+            {filteredPastMeetings.length} past meeting
+            {filteredPastMeetings.length === 1 ? '' : 's'}
+          </p>
+        </div>
+        <div className="tf-history-filter" role="group" aria-label="Filter history by time">
+          <button
+            type="button"
+            className={`tf-history-filter-btn${historyFilter === 'month' ? ' tf-history-filter-btn-active' : ''}`}
+            onClick={() => setHistoryFilter('month')}
+          >
+            Last Month
+          </button>
+          <button
+            type="button"
+            className={`tf-history-filter-btn${historyFilter === '3months' ? ' tf-history-filter-btn-active' : ''}`}
+            onClick={() => setHistoryFilter('3months')}
+          >
+            Last 3 Months
+          </button>
+          <button
+            type="button"
+            className={`tf-history-filter-btn${historyFilter === 'all' ? ' tf-history-filter-btn-active' : ''}`}
+            onClick={() => setHistoryFilter('all')}
+          >
+            All
+          </button>
+        </div>
+        {meetingsQuery.isLoading ? (
+          <p className="tf-loading">Loading…</p>
+        ) : meetingsQuery.isError ? (
+          <p className="auth-error">Failed to load meetings.</p>
+        ) : filteredPastMeetings.length === 0 ? (
+          <p className="tf-col-empty">No past meetings in this period.</p>
+        ) : (
+          <ul className="tf-history-list">
+            {filteredPastMeetings.map((m) => (
+              <li key={m._id}>
+                <button
+                  type="button"
+                  className="tf-history-item tf-history-item-btn"
+                  onClick={() => openEditMeeting(m)}
+                  aria-label={`View meeting: ${m.title}`}
+                >
+                  <span className="tf-history-item-title">
+                    {m.title?.trim() ? m.title : 'Untitled'}
+                  </span>
+                  <span className="tf-history-item-meta">
+                    {formatMeetingDate(m.date)}
+                    {m.time?.trim() ? ` · ${m.time}` : ''}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      ) : null}
+
       {dayModalDate ? (
         <MeetingsDayModal
           date={dayModalDate}
-          meetings={(meetingsQuery.data ?? []).filter((m) => m.date === dayModalDate)}
+          meetings={meetings.filter((m) => m.date === dayModalDate)}
           onSelectMeeting={(m) => {
             closeDayMeetings()
             openEditMeeting(m)
           }}
+          onDeleteMeeting={handleDeleteMeeting}
+          isDeleting={deleteMut.isPending}
           onClose={closeDayMeetings}
         />
       ) : null}

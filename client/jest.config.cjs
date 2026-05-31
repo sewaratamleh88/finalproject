@@ -11,13 +11,7 @@ module.exports = {
     '^.+\\.tsx?$': [
       'ts-jest',
       {
-        tsconfig: {
-          jsx: 'react-jsx',
-          module: 'commonjs',
-          moduleResolution: 'node',
-          esModuleInterop: true,
-          allowSyntheticDefaultImports: true,
-        },
+        tsconfig: '<rootDir>/tsconfig.jest.json',
       },
     ],
   },

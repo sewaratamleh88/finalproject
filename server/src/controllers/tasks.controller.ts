@@ -1,5 +1,11 @@
 import type { NextFunction, Request, Response } from 'express';
 import { TaskModel } from '../models/Task.model.js';
+import {
+  LIMITS,
+  validateOptionalString,
+  validateRequiredString,
+  validateTaskPriority,
+} from '../utils/validation.js';
 
 const TASK_STATUSES = ['todo', 'in_progress', 'done', 'approved', 'rejected'] as const;
 type TaskStatus = (typeof TASK_STATUSES)[number];
@@ -57,13 +63,36 @@ export async function createTask(req: Request, res: Response, next: NextFunction
     if (!user) return res.status(401).json({ message: 'Unauthorized' });
 
     const { title, description, priority } = req.body ?? {};
+
+    const titleError = validateRequiredString(title, 'Title', {
+      min: 1,
+      max: LIMITS.taskTitle,
+    });
+    if (titleError) {
+      return res.status(400).json({ message: titleError });
+    }
+
+    const descriptionResult = validateOptionalString(description, 'Description', {
+      max: LIMITS.taskDescription,
+    });
+    if (descriptionResult.error) {
+      return res.status(400).json({ message: descriptionResult.error });
+    }
+
+    const priorityError = validateTaskPriority(priority);
+    if (priorityError) {
+      return res.status(400).json({ message: priorityError });
+    }
+
     const resolvedStatus: TaskStatus = 'todo';
     const resolvedCompleted = completedFromStatus(resolvedStatus);
     const created = await TaskModel.create({
       userId: user.id,
-      title,
-      description,
-      priority,
+      title: (title as string).trim(),
+      ...(descriptionResult.value !== undefined
+        ? { description: descriptionResult.value }
+        : {}),
+      priority: priority ?? 'medium',
       status: resolvedStatus,
       completed: resolvedCompleted,
     });
@@ -106,13 +135,43 @@ export async function updateTask(req: Request, res: Response, next: NextFunction
       patch.status = status;
       patch.completed = completedFromStatus(status);
       if (comment !== undefined) {
-        patch.comment = typeof comment === 'string' ? comment.trim() : '';
+        if (comment !== null && typeof comment !== 'string') {
+          return res.status(400).json({ message: 'Comment must be a string' });
+        }
+        const trimmedComment = typeof comment === 'string' ? comment.trim() : '';
+        if (trimmedComment.length > LIMITS.taskComment) {
+          return res.status(400).json({ message: 'Comment is too long' });
+        }
+        patch.comment = trimmedComment;
       }
     } else {
       // User flow: can update own task fields; approval statuses are not allowed.
-      if (title !== undefined) patch.title = title;
-      if (description !== undefined) patch.description = description;
-      if (priority !== undefined) patch.priority = priority;
+      if (title !== undefined) {
+        const titleError = validateRequiredString(title, 'Title', {
+          min: 1,
+          max: LIMITS.taskTitle,
+        });
+        if (titleError) {
+          return res.status(400).json({ message: titleError });
+        }
+        patch.title = (title as string).trim();
+      }
+      if (description !== undefined) {
+        const descriptionResult = validateOptionalString(description, 'Description', {
+          max: LIMITS.taskDescription,
+        });
+        if (descriptionResult.error) {
+          return res.status(400).json({ message: descriptionResult.error });
+        }
+        patch.description = descriptionResult.value ?? '';
+      }
+      if (priority !== undefined) {
+        const priorityError = validateTaskPriority(priority);
+        if (priorityError) {
+          return res.status(400).json({ message: priorityError });
+        }
+        patch.priority = priority;
+      }
 
       if (status !== undefined) {
         // User can move rejected -> todo to fix and resubmit, and can set done.
@@ -130,6 +189,9 @@ export async function updateTask(req: Request, res: Response, next: NextFunction
         patch.status = status;
         patch.completed = completedFromStatus(status);
       } else if (completed !== undefined) {
+        if (typeof completed !== 'boolean') {
+          return res.status(400).json({ message: 'completed must be a boolean' });
+        }
         const nextStatus: TaskStatus = completed ? 'done' : 'todo';
         patch.completed = completed;
         patch.status = nextStatus;
