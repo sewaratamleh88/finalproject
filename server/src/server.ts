@@ -12,7 +12,6 @@ async function main() {
   const app = createApp();
   const server = http.createServer(app);
 
-  // Socket.IO is required by the stack; we'll wire auth/events in a later step.
   io = new SocketIOServer(server, {
     cors: {
       origin: env.CLIENT_ORIGIN,
@@ -25,16 +24,12 @@ async function main() {
     socket.emit('server:hello', { message: 'connected' });
   });
 
-  // fallback for Render PORT
   const port = env.PORT || 4000;
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, () => resolve());
+  
+  server.listen(port, '0.0.0.0', () => {
+    console.log(`API running on port ${port}`);
   });
-
-  // optional small fix (log)
-  console.log(`API running on port ${port}`);
 }
 
 main().catch((err) => {
