@@ -356,7 +356,7 @@ export function TasksPage() {
     } = {
       title: title.trim(),
       description: description.trim() || undefined,
-      priority,
+      priority: priority as TaskPriority,
     }
 
     if (status === 'todo') {
