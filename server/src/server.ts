@@ -19,8 +19,15 @@ async function main() {
     },
   });
 
+  app.set('io', io);
+
   io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
+    const userId = socket.handshake.auth?.userId;
+    console.log('SOCKET CONNECTED:', userId);
+    if (userId) {
+      socket.join(String(userId));
+    }
     socket.emit('server:hello', { message: 'connected' });
   });
 

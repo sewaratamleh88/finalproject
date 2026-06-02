@@ -4,11 +4,12 @@ import type { TaskPriority, TaskStatus } from '../types/task'
 type TaskFormProps = {
   title: string
   description: string
-  priority: TaskPriority
+  priority: TaskPriority | ''
   status: TaskStatus
   onTitleChange: (value: string) => void
   onDescriptionChange: (value: string) => void
-  onPriorityChange: (value: TaskPriority) => void
+  onPriorityChange: (value: TaskPriority | '') => void
+  priorityError?: string | null
   onStatusChange: (value: TaskStatus) => void
   onSubmit: (e: FormEvent) => void
   isPending: boolean
@@ -31,6 +32,7 @@ export function TaskForm({
   onSubmit,
   isPending,
   showCreateError,
+  priorityError,
   onCancel,
   formTitle = 'New Task',
   submitLabel,
@@ -70,12 +72,18 @@ export function TaskForm({
         />
         <select
           value={priority}
-          onChange={(e) => onPriorityChange(e.target.value as TaskPriority)}
+          onChange={(e) => onPriorityChange(e.target.value as TaskPriority | '')}
+          aria-label="Priority"
+          required
         >
+          <option value="" disabled>
+            Select Priority
+          </option>
           <option value="low">Low</option>
           <option value="medium">Medium</option>
           <option value="high">High</option>
         </select>
+        {priorityError ? <p className="auth-error">{priorityError}</p> : null}
         {showStatusSelect ? (
           <select
             value={status}

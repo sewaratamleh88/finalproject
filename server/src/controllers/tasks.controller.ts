@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import { TaskModel } from '../models/Task.model.js';
+import { UserModel } from '../models/User.model.js';
 import {
   LIMITS,
   validateOptionalString,
@@ -50,7 +51,7 @@ export async function listTasks(req: Request, res: Response, next: NextFunction)
     const tasks =
       user.role === 'admin'
         ? await query.populate('userId', 'email role').lean()
-        : await query.lean();
+        : await query.populate('userId', 'email role').lean();
     res.json(tasks.map((t) => normalizeTaskDoc(t)));
   } catch (err) {
     next(err);
@@ -96,7 +97,8 @@ export async function createTask(req: Request, res: Response, next: NextFunction
       status: resolvedStatus,
       completed: resolvedCompleted,
     });
-    res.status(201).json(created);
+    await created.populate('userId', 'email role');
+    res.status(201).json(created.toObject());
   } catch (err) {
     next(err);
   }
@@ -204,7 +206,31 @@ export async function updateTask(req: Request, res: Response, next: NextFunction
     });
 
     if (!updated) return res.status(404).json({ message: 'Task not found' });
-    res.json(normalizeTaskDoc(updated.toObject()));
+    await updated.populate('userId', 'email role');
+    const normalized = normalizeTaskDoc(updated.toObject());
+
+    if (user.role === 'admin' && (patch.status === 'approved' || patch.status === 'rejected')) {
+      const io = req.app.get('io');
+      const ownerId = (existing as { userId?: unknown }).userId;
+      if (io && ownerId) {
+        io.to(String(ownerId)).emit('task_updated', normalized);
+      }
+    }
+
+    // Realtime: when a user submits a task for review (status -> done),
+    // notify admins so the review list updates without refresh.
+    if (user.role !== 'admin' && normalized.status === 'done') {
+      const io = req.app.get('io');
+      if (io) {
+        console.log('EMIT TASK UPDATED:', (normalized as { _id?: unknown })._id, normalized.status);
+        const admins = await UserModel.find({ role: 'admin' }).select('_id').lean();
+        for (const admin of admins) {
+          io.to(String((admin as { _id: unknown })._id)).emit('task_updated', normalized);
+        }
+      }
+    }
+
+    res.json(normalized);
   } catch (err) {
     next(err);
   }

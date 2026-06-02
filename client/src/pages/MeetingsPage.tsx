@@ -1,13 +1,24 @@
 import { TasksPageHeader } from '../components/TasksPageHeader'
 import { useAuth } from '../hooks/useAuth'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createMeeting, deleteMeeting, getMeetings, updateMeeting, type MeetingDto } from '../api/meetings'
+import { fetchNotifications, markNotificationsRead } from '../api/notifications'
+import { fetchUsers } from '../api/users'
 import { MeetingEditModal } from '../components/MeetingEditModal'
 import { MeetingCreateModal } from '../components/MeetingCreateModal'
 import { MeetingsDayModal } from '../components/MeetingsDayModal'
 import type { HistoryFilter } from '../utils/historyFilter'
 import { matchesHistoryFilter } from '../utils/historyFilter'
+import { io } from 'socket.io-client'
+
+type NotificationItem = {
+  id: string
+  meetingId?: string
+  message: string
+  read: boolean
+  createdAt: number
+}
 
 export function MeetingsPage() {
   const { user, logout } = useAuth()
@@ -32,19 +43,123 @@ export function MeetingsPage() {
   const [editTime, setEditTime] = useState('')
   const [dayModalDate, setDayModalDate] = useState<string | null>(null)
   const [createServerError, setCreateServerError] = useState<string | null>(null)
+  const [inviteAllUsers, setInviteAllUsers] = useState(false)
+  const [participantIds, setParticipantIds] = useState<string[]>([])
   const [editServerError, setEditServerError] = useState<string | null>(null)
   const [showHistory, setShowHistory] = useState(false)
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
+  const [toasts, setToasts] = useState<string[]>([])
+  const [highlightMeetingIds, setHighlightMeetingIds] = useState<string[]>([])
+  const [notifications, setNotifications] = useState<NotificationItem[]>([])
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false)
+  const notificationsRef = useRef<HTMLDivElement>(null)
+  const [, setNowTick] = useState(0)
 
   const MEETINGS_KEY = ['meetings'] as const
+
+  function timeAgo(createdAt: number) {
+    const diffMs = Date.now() - createdAt
+    if (diffMs < 15_000) return 'just now'
+    const diffSec = Math.floor(diffMs / 1000)
+    if (diffSec < 60) return `${diffSec}s ago`
+    const diffMin = Math.floor(diffSec / 60)
+    if (diffMin < 60) return `${diffMin}m ago`
+    const diffH = Math.floor(diffMin / 60)
+    if (diffH < 24) return `${diffH}h ago`
+    const diffD = Math.floor(diffH / 24)
+    return `${diffD}d ago`
+  }
+
+  function scrollToMeetingById(meetingId: string) {
+    const el = document.querySelector(`[data-meeting-id="${meetingId}"]`) as HTMLElement | null
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+    setHighlightMeetingIds((prev) => (prev.includes(meetingId) ? prev : [meetingId, ...prev]))
+    window.setTimeout(() => {
+      setHighlightMeetingIds((prev) => prev.filter((id) => id !== meetingId))
+    }, 2600)
+  }
+
+  function showToast(message: string) {
+    setToasts((prev) => [...prev, message])
+    window.setTimeout(() => {
+      setToasts((prev) => {
+        const idx = prev.indexOf(message)
+        if (idx < 0) return prev
+        return [...prev.slice(0, idx), ...prev.slice(idx + 1)]
+      })
+    }, 3600)
+  }
+
+  useEffect(() => {
+    if (!user?.id) return
+    let isAlive = true
+    fetchNotifications()
+      .then((items) => {
+        if (!isAlive) return
+        setNotifications((prev) => {
+          const seen = new Set<string>()
+          const merged: NotificationItem[] = []
+          const push = (n: NotificationItem) => {
+            const key = `${n.meetingId ?? ''}|${n.message}`
+            if (seen.has(key)) return
+            seen.add(key)
+            merged.push(n)
+          }
+
+          // Prefer server notifications; then keep any local-only ones (e.g. realtime before fetch).
+          for (const n of items) {
+            push({
+              id: n._id,
+              meetingId: n.meetingId,
+              message: n.message,
+              read: n.read,
+              createdAt: new Date(n.createdAt).getTime(),
+            })
+          }
+          for (const n of prev) push(n)
+          return merged.slice(0, 20)
+        })
+      })
+      .catch(() => {})
+    return () => {
+      isAlive = false
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('tf:notifications', JSON.stringify(notifications.slice(0, 20)))
+    } catch {
+      // ignore
+    }
+  }, [notifications])
+
+  useEffect(() => {
+    if (!isNotificationsOpen) return
+    const t = window.setInterval(() => setNowTick((v) => v + 1), 30_000)
+    return () => window.clearInterval(t)
+  }, [isNotificationsOpen])
 
   const meetingsQuery = useQuery({
     queryKey: MEETINGS_KEY,
     queryFn: getMeetings,
   })
 
+  const usersQuery = useQuery({
+    queryKey: ['users'] as const,
+    queryFn: fetchUsers,
+    enabled: user?.role === 'admin',
+  })
+
   const createMut = useMutation({
-    mutationFn: (data: { title: string; date: string; time?: string }) => createMeeting(data),
+    mutationFn: (data: {
+      title: string
+      date: string
+      time?: string
+      participants?: string[]
+      isAllUsers?: boolean
+    }) => createMeeting(data),
     onSuccess: () => {
       setCreateServerError(null)
       void queryClient.invalidateQueries({ queryKey: MEETINGS_KEY })
@@ -130,6 +245,80 @@ export function MeetingsPage() {
     localStorage.setItem('tf:meetings:monthOffset', String(monthOffset))
   }, [monthOffset])
 
+  useEffect(() => {
+    if (!user?.id) return
+    const socket = io(import.meta.env.VITE_API_URL ?? 'http://localhost:4000', {
+      auth: { userId: user.id },
+    })
+
+    function onMeetingInvited(meeting: MeetingDto) {
+      const meetingId = meeting?._id
+      if (typeof meetingId !== 'string' || !meetingId) return
+
+      let didInsert = false
+      queryClient.setQueryData(MEETINGS_KEY, (prev) => {
+        const list = Array.isArray(prev) ? prev : []
+        if (list.some((m) => m._id === meetingId)) return list
+        didInsert = true
+        return [meeting, ...list]
+      })
+      if (didInsert) {
+        showToast('You were invited to a meeting')
+        setHighlightMeetingIds((prev) => (prev.includes(meetingId) ? prev : [meetingId, ...prev]))
+        const createdAt = Date.now()
+        setNotifications((prev) =>
+          [
+            {
+              id: `${meetingId}:${createdAt}`,
+              meetingId,
+              message: 'You were invited to a meeting',
+              read: false,
+              createdAt,
+            },
+            ...prev,
+          ].slice(0, 20),
+        )
+        window.setTimeout(() => {
+          setHighlightMeetingIds((prev) => prev.filter((id) => id !== meetingId))
+        }, 4200)
+      }
+    }
+
+    socket.on('meeting_invited', onMeetingInvited)
+    return () => {
+      socket.off('meeting_invited', onMeetingInvited)
+      socket.disconnect()
+    }
+  }, [MEETINGS_KEY, queryClient, user?.id])
+
+  const unreadNotificationsCount = useMemo(
+    () => notifications.reduce((acc, n) => acc + (n.read ? 0 : 1), 0),
+    [notifications],
+  )
+
+  useEffect(() => {
+    if (!isNotificationsOpen) return
+    const unreadIds = notifications
+      .filter((n) => !n.read)
+      .map((n) => n.id)
+      .filter((id) => typeof id === 'string' && id.trim().length > 0)
+    setNotifications((prev) => prev.map((n) => (n.read ? n : { ...n, read: true })))
+    if (unreadIds.length > 0) {
+      void markNotificationsRead(unreadIds)
+    }
+  }, [isNotificationsOpen, notifications])
+
+  useEffect(() => {
+    if (!isNotificationsOpen) return
+    function handlePointerDown(event: MouseEvent) {
+      if (!notificationsRef.current?.contains(event.target as Node)) {
+        setIsNotificationsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [isNotificationsOpen])
+
   function dateKey(day: number) {
     const mm = String(monthIndex + 1).padStart(2, '0')
     const dd = String(day).padStart(2, '0')
@@ -148,8 +337,15 @@ export function MeetingsPage() {
     setNewMeetingDate('')
     setNewMeetingTitle('')
     setNewMeetingTime('')
+    setInviteAllUsers(false)
+    setParticipantIds([])
     setCreateServerError(null)
     setIsAddOpen(true)
+  }
+
+  function handleInviteAllUsersChange(checked: boolean) {
+    setInviteAllUsers(checked)
+    if (checked) setParticipantIds([])
   }
 
   function openDayMeetings(dateStr: string) {
@@ -203,18 +399,32 @@ export function MeetingsPage() {
     const title = newMeetingTitle.trim()
     if (!date || !title) return
 
-    createMut.mutate(
-      { title, date, time: newMeetingTime || undefined },
-      {
-        onSuccess: () => {
-          setNewMeetingDate('')
-          setNewMeetingTitle('')
-          setNewMeetingTime('')
-          if (date) setViewMonthForDate(date)
-          setIsAddOpen(false)
-        },
+    const payload: {
+      title: string
+      date: string
+      time?: string
+      participants?: string[]
+      isAllUsers?: boolean
+    } = { title, date, time: newMeetingTime || undefined }
+
+    if (user?.role === 'admin') {
+      payload.isAllUsers = inviteAllUsers
+      if (!inviteAllUsers && participantIds.length > 0) {
+        payload.participants = participantIds
+      }
+    }
+
+    createMut.mutate(payload, {
+      onSuccess: () => {
+        setNewMeetingDate('')
+        setNewMeetingTitle('')
+        setNewMeetingTime('')
+        setInviteAllUsers(false)
+        setParticipantIds([])
+        if (date) setViewMonthForDate(date)
+        setIsAddOpen(false)
       },
-    )
+    })
   }
 
   const meetings = meetingsQuery.data ?? []
@@ -241,7 +451,71 @@ export function MeetingsPage() {
 
   return (
     <div className="tasks-page tf-tasks">
-      <TasksPageHeader user={user} onLogout={logout} />
+      <div className="tf-page-head tf-meetings-head">
+        <TasksPageHeader user={user} onLogout={logout} />
+        <div ref={notificationsRef} className="tf-notifications">
+          <button
+            type="button"
+            className="tf-notifications-btn"
+            aria-label="Notifications"
+            aria-expanded={isNotificationsOpen}
+            onClick={() => setIsNotificationsOpen((v) => !v)}
+          >
+            <span className="tf-notifications-icon" aria-hidden>
+              🔔
+            </span>
+            {unreadNotificationsCount > 0 ? (
+              <span className="tf-notifications-badge" aria-label={`${unreadNotificationsCount} unread`}>
+                {unreadNotificationsCount}
+              </span>
+            ) : null}
+          </button>
+          {isNotificationsOpen ? (
+            <div className="tf-notifications-dropdown" role="menu" aria-label="Notification center">
+              <div className="tf-notifications-head">
+                <div className="tf-notifications-title">Notifications</div>
+                <button
+                  type="button"
+                  className="tf-notifications-clear"
+                  onClick={() => setNotifications([])}
+                >
+                  Clear all
+                </button>
+              </div>
+              {notifications.length === 0 ? (
+                <div className="tf-notifications-empty">No notifications</div>
+              ) : (
+                notifications.slice(0, 20).map((n) => (
+                  <button
+                    key={n.id}
+                    type="button"
+                    className={`tf-notification-item${n.read ? '' : ' tf-notification-item-unread'}`}
+                    role="menuitem"
+                    onClick={() => {
+                      setIsNotificationsOpen(false)
+                      if (n.meetingId) scrollToMeetingById(n.meetingId)
+                    }}
+                  >
+                    <div className="tf-notification-message">{n.message}</div>
+                    <div className="tf-notification-time" aria-label="Notification time">
+                      {timeAgo(n.createdAt)}
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          ) : null}
+        </div>
+      </div>
+      {toasts.length > 0 ? (
+        <div className="tf-toast-stack tf-toast-topright" aria-live="polite">
+          {toasts.map((t, idx) => (
+            <div key={`${idx}-${t}`} className="tf-toast" role="status">
+              {t}
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       <div className="tf-board-toolbar">
         <div className="tf-board-titles">
@@ -310,7 +584,8 @@ export function MeetingsPage() {
                     <button
                       key={m._id}
                       type="button"
-                      className="tf-cal-badge tf-cal-badge-btn"
+                      className={`tf-cal-badge tf-cal-badge-btn${highlightMeetingIds.includes(m._id) ? ' tf-cal-badge-highlight' : ''}`}
+                      data-meeting-id={m._id}
                       onClick={(e) => {
                         e.stopPropagation()
                         openEditMeeting(m)
@@ -386,7 +661,8 @@ export function MeetingsPage() {
               <li key={m._id}>
                 <button
                   type="button"
-                  className="tf-history-item tf-history-item-btn"
+                  className={`tf-history-item tf-history-item-btn${highlightMeetingIds.includes(m._id) ? ' tf-history-item-highlight' : ''}`}
+                  data-meeting-id={m._id}
                   onClick={() => openEditMeeting(m)}
                   aria-label={`View meeting: ${m.title}`}
                 >
@@ -448,6 +724,12 @@ export function MeetingsPage() {
           onClose={() => setIsAddOpen(false)}
           isPending={createMut.isPending}
           serverError={createServerError}
+          isAdmin={user?.role === 'admin'}
+          inviteAllUsers={inviteAllUsers}
+          onInviteAllUsersChange={handleInviteAllUsersChange}
+          participantIds={participantIds}
+          onParticipantIdsChange={setParticipantIds}
+          inviteUsers={usersQuery.data ?? []}
         />
       ) : null}
     </div>

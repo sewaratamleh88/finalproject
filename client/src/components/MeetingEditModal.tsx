@@ -40,6 +40,12 @@ export function MeetingEditModal({
 }: MeetingEditModalProps) {
   const [error, setError] = useState<string | null>(null)
   const isLocked = !!lockedMessage
+  const invitedEmails =
+    meeting.isAllUsers
+      ? ['All users']
+      : (meeting.participants ?? [])
+          .map((p) => (typeof p === 'string' ? p : p?.email ?? p?._id))
+          .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
 
   useEffect(() => {
     if (!lockedMessage) return
@@ -132,6 +138,15 @@ export function MeetingEditModal({
                   />
                 </label>
               </div>
+
+              {invitedEmails.length > 0 ? (
+                <div className="tf-meeting-field">
+                  <span className="tf-meeting-label">Invited</span>
+                  <div className="tf-meeting-invited-list" aria-label="Invited users">
+                    {invitedEmails.join(', ')}
+                  </div>
+                </div>
+              ) : null}
 
               {error ? <div className="tf-inline-error">{error}</div> : null}
             </div>

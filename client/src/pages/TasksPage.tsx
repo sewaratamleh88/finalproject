@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
 import { useEffect, useState } from 'react'
+import { io } from 'socket.io-client'
 import {
   createTask,
   deleteTask,
@@ -18,6 +19,13 @@ import { matchesHistoryFilter } from '../utils/historyFilter'
 import { canEditTask, resolveTaskStatus } from '../utils/taskEdit'
 
 const TASKS_KEY = ['tasks'] as const
+
+function tasksListQueryKey(
+  role: 'user' | 'admin' | undefined,
+  selectedUserId: string,
+) {
+  return [...TASKS_KEY, { userId: role === 'admin' ? selectedUserId : 'me' }] as const
+}
 
 type DeletedTaskRecord = Task & { deletedAt: string }
 
@@ -54,7 +62,8 @@ export function TasksPage() {
   const queryClient = useQueryClient()
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
-  const [priority, setPriority] = useState<TaskPriority>('medium')
+  const [priority, setPriority] = useState<TaskPriority | ''>('')
+  const [priorityError, setPriorityError] = useState<string | null>(null)
   const [taskStatus, setTaskStatus] = useState<TaskStatus>('todo')
   const [search, setSearch] = useState('')
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | 'all'>(
@@ -73,8 +82,10 @@ export function TasksPage() {
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
   const [deletedHistory, setDeletedHistory] = useState<DeletedTaskRecord[]>([])
 
+  const tasksListKey = tasksListQueryKey(user?.role, selectedUserId)
+
   const tasksQuery = useQuery<Task[]>({
-    queryKey: [...TASKS_KEY, { userId: user?.role === 'admin' ? selectedUserId : 'me' }] as const,
+    queryKey: tasksListKey,
     queryFn: () =>
       fetchTasks(
         user?.role === 'admin' && selectedUserId !== 'all'
@@ -89,12 +100,53 @@ export function TasksPage() {
     return () => clearTimeout(t)
   }, [user?.id])
 
+  useEffect(() => {
+    if (!user?.id) return
+    const socket = io(import.meta.env.VITE_API_URL ?? 'http://localhost:4000', {
+      auth: { userId: user.id },
+    })
+
+    function onTaskUpdated(updatedTask: Task) {
+      console.log('TASK RECEIVED:', updatedTask)
+      const updatedUserId =
+        typeof updatedTask.userId === 'string'
+          ? updatedTask.userId
+          : updatedTask.userId?._id
+
+      const listKey = tasksListQueryKey(user?.role, selectedUserId)
+      queryClient.setQueryData<Task[]>(listKey, (current) => {
+        if (!current) return current
+        const exists = current.some((t) => t._id === updatedTask._id)
+        if (exists) {
+          return current.map((t) => (t._id === updatedTask._id ? updatedTask : t))
+        }
+
+        // Admin review list needs insert when a task becomes "done" (Waiting for review).
+        if (
+          user?.role === 'admin' &&
+          updatedTask.status === 'done' &&
+          (selectedUserId === 'all' || (updatedUserId && updatedUserId === selectedUserId))
+        ) {
+          return [updatedTask, ...current]
+        }
+
+        return current
+      })
+    }
+
+    socket.on('task_updated', onTaskUpdated)
+    return () => {
+      socket.off('task_updated', onTaskUpdated)
+      socket.disconnect()
+    }
+  }, [queryClient, selectedUserId, user?.id, user?.role])
+
   const createMut = useMutation({
     mutationFn: () =>
       createTask({
         title: title.trim(),
         description: description.trim() || undefined,
-        priority,
+        priority: priority as TaskPriority,
         status: taskStatus,
       }),
     onSuccess: () => {
@@ -117,10 +169,14 @@ export function TasksPage() {
         status?: TaskStatus
       }
     }) => updateTask(id, input),
-    onSuccess: () => {
+    onSuccess: (updated) => {
+      const listKey = tasksListQueryKey(user?.role, selectedUserId)
+      queryClient.setQueryData<Task[]>(listKey, (current) => {
+        if (!current) return current
+        return current.map((t) => (t._id === updated._id ? updated : t))
+      })
       resetTaskForm()
       setEditTask(null)
-      void queryClient.invalidateQueries({ queryKey: TASKS_KEY })
     },
   })
 
@@ -134,7 +190,13 @@ export function TasksPage() {
       completed: boolean
       status: TaskStatus
     }) => updateTask(id, { completed, status }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: TASKS_KEY }),
+    onSuccess: (updated) => {
+      const listKey = tasksListQueryKey(user?.role, selectedUserId)
+      queryClient.setQueryData<Task[]>(listKey, (current) => {
+        if (!current) return current
+        return current.map((t) => (t._id === updated._id ? updated : t))
+      })
+    },
   })
 
   const reviewMut = useMutation({
@@ -148,43 +210,72 @@ export function TasksPage() {
       comment: string
     }) => updateTask(id, { status, comment: comment.trim() || undefined }),
     onMutate: async ({ id, status, comment }) => {
-      await queryClient.cancelQueries({ queryKey: TASKS_KEY })
-      const prev = queryClient.getQueryData<Task[]>(TASKS_KEY)
+      const listKey = tasksListQueryKey(user?.role, selectedUserId)
+      await queryClient.cancelQueries({ queryKey: listKey })
+      const prev = queryClient.getQueryData<Task[]>(listKey)
 
-      queryClient.setQueryData<Task[]>(TASKS_KEY, (current) => {
+      queryClient.setQueryData<Task[]>(listKey, (current) => {
         if (!current) return current
-        if (user?.role !== 'admin') return current
-        return current.filter((t) => t._id !== id)
+        if (user?.role === 'admin') {
+          return current.filter((t) => t._id !== id)
+        }
+        return current.map((t) =>
+          t._id === id
+            ? {
+                ...t,
+                status,
+                comment: comment.trim() || undefined,
+                completed: status === 'approved',
+              }
+            : t,
+        )
       })
 
-      return { prev, id, status, comment }
+      return { prev, listKey }
     },
     onError: (_err, _vars, ctx) => {
-      if (ctx?.prev) queryClient.setQueryData(TASKS_KEY, ctx.prev)
+      if (ctx?.prev && ctx.listKey) {
+        queryClient.setQueryData(ctx.listKey, ctx.prev)
+      }
     },
-    onSuccess: () => {
+    onSuccess: (updated, variables) => {
+      const listKey = tasksListQueryKey(user?.role, selectedUserId)
+      queryClient.setQueryData<Task[]>(listKey, (current) => {
+        if (!current) return current
+        if (user?.role === 'admin') {
+          return current.filter((t) => t._id !== variables.id)
+        }
+        return current.map((t) => (t._id === updated._id ? updated : t))
+      })
       setReviewTask(null)
       setReviewComment('')
-      void queryClient.invalidateQueries({ queryKey: TASKS_KEY })
     },
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: TASKS_KEY }),
   })
 
   const reworkMut = useMutation({
     mutationFn: ({ id }: { id: string }) => updateTask(id, { status: 'todo' }),
     onMutate: async ({ id }) => {
-      await queryClient.cancelQueries({ queryKey: TASKS_KEY })
-      const prev = queryClient.getQueryData<Task[]>(TASKS_KEY)
-      queryClient.setQueryData<Task[]>(TASKS_KEY, (current) => {
+      const listKey = tasksListQueryKey(user?.role, selectedUserId)
+      await queryClient.cancelQueries({ queryKey: listKey })
+      const prev = queryClient.getQueryData<Task[]>(listKey)
+      queryClient.setQueryData<Task[]>(listKey, (current) => {
         if (!current) return current
         return current.map((t) => (t._id === id ? { ...t, status: 'todo', completed: false } : t))
       })
-      return { prev }
+      return { prev, listKey }
     },
     onError: (_err, _vars, ctx) => {
-      if (ctx?.prev) queryClient.setQueryData(TASKS_KEY, ctx.prev)
+      if (ctx?.prev && ctx.listKey) {
+        queryClient.setQueryData(ctx.listKey, ctx.prev)
+      }
     },
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: TASKS_KEY }),
+    onSuccess: (updated) => {
+      const listKey = tasksListQueryKey(user?.role, selectedUserId)
+      queryClient.setQueryData<Task[]>(listKey, (current) => {
+        if (!current) return current
+        return current.map((t) => (t._id === updated._id ? updated : t))
+      })
+    },
   })
 
   const deleteMut = useMutation({
@@ -214,13 +305,19 @@ export function TasksPage() {
   function resetTaskForm() {
     setTitle('')
     setDescription('')
-    setPriority('medium')
+    setPriority('')
     setTaskStatus('todo')
+    setPriorityError(null)
   }
 
   function handleAdd(e: React.FormEvent) {
     e.preventDefault()
     if (!title.trim()) return
+    if (!priority) {
+      setPriorityError('Please select a priority.')
+      return
+    }
+    setPriorityError(null)
     createMut.mutate()
   }
 
@@ -485,7 +582,11 @@ export function TasksPage() {
               status={taskStatus}
               onTitleChange={setTitle}
               onDescriptionChange={setDescription}
-              onPriorityChange={setPriority}
+              onPriorityChange={(value) => {
+                setPriority(value)
+                if (value) setPriorityError(null)
+              }}
+              priorityError={!editTask ? priorityError : null}
               onStatusChange={setTaskStatus}
               onSubmit={editTask ? handleEditSave : handleAdd}
               isPending={editTask ? updateMut.isPending : createMut.isPending}

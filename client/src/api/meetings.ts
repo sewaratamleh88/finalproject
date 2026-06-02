@@ -5,7 +5,10 @@ export type MeetingDto = {
   title: string
   date: string // YYYY-MM-DD
   time?: string // HH:MM (optional)
-  createdBy: string
+  userId?: string | { _id: string; email?: string }
+  createdBy: string | { _id: string; email?: string }
+  participants?: Array<string | { _id: string; email?: string }>
+  isAllUsers?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -19,6 +22,8 @@ export async function createMeeting(data: {
   title: string
   date: string
   time?: string
+  participants?: string[]
+  isAllUsers?: boolean
 }): Promise<MeetingDto> {
   const res = await http.post<MeetingDto>('/api/meetings', data)
   return res.data

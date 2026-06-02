@@ -15,10 +15,23 @@ const meetingSchema = new Schema(
       match: /^$|^\d{2}:\d{2}$/,
       default: '',
     },
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
     createdBy: {
       type: Schema.Types.ObjectId,
       ref: 'User',
       required: true,
+    },
+    participants: {
+      type: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+      default: [],
+    },
+    isAllUsers: {
+      type: Boolean,
+      default: false,
     },
   },
   { timestamps: true },

@@ -1,5 +1,7 @@
 import type { User } from '../types/auth'
 import { NavLink } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { fetchNotifications } from '../api/notifications'
 
 type TasksPageHeaderProps = {
   user: User | null
@@ -14,6 +16,47 @@ function initialsFromEmail(email: string) {
 }
 
 export function TasksPageHeader({ user, onLogout }: TasksPageHeaderProps) {
+  const [unreadMeetingsCount, setUnreadMeetingsCount] = useState(0)
+  const [headerToasts, setHeaderToasts] = useState<string[]>([])
+
+  useEffect(() => {
+    if (!user?.id) return
+    let alive = true
+    fetchNotifications()
+      .then((items) => {
+        if (!alive) return
+        const unread = items.filter((n) => !n.read).length
+        setUnreadMeetingsCount(unread)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [user?.id])
+
+  const shouldShowUnreadToast = useMemo(() => {
+    if (!user?.id) return false
+    if (unreadMeetingsCount <= 0) return false
+    try {
+      return sessionStorage.getItem('tf:meetings:unreadToastShown') !== '1'
+    } catch {
+      return false
+    }
+  }, [unreadMeetingsCount, user?.id])
+
+  useEffect(() => {
+    if (!shouldShowUnreadToast) return
+    const msg = `You have ${unreadMeetingsCount} new meeting update${unreadMeetingsCount === 1 ? '' : 's'}`
+    setHeaderToasts((prev) => [...prev, msg])
+    try {
+      sessionStorage.setItem('tf:meetings:unreadToastShown', '1')
+    } catch {}
+    const t = window.setTimeout(() => {
+      setHeaderToasts((prev) => prev.filter((x) => x !== msg))
+    }, 3800)
+    return () => window.clearTimeout(t)
+  }, [shouldShowUnreadToast, unreadMeetingsCount])
+
   return (
     <header className="tf-top-nav">
       <div className="tf-top-nav-inner">
@@ -47,7 +90,14 @@ export function TasksPageHeader({ user, onLogout }: TasksPageHeaderProps) {
             <span className="tf-nav-tab-icon" aria-hidden>
               ▣
             </span>
-            Meetings
+            <span className="tf-nav-tab-text">
+              Meetings
+              {unreadMeetingsCount > 0 ? (
+                <span className="tf-nav-updates-badge" aria-label={`${unreadMeetingsCount} unread meeting updates`}>
+                  {unreadMeetingsCount}
+                </span>
+              ) : null}
+            </span>
           </NavLink>
         </nav>
 
@@ -91,6 +141,15 @@ export function TasksPageHeader({ user, onLogout }: TasksPageHeaderProps) {
           ) : null}
         </div>
       </div>
+      {headerToasts.length > 0 ? (
+        <div className="tf-toast-stack tf-toast-topright tf-toast-global" aria-live="polite">
+          {headerToasts.map((t, idx) => (
+            <div key={`${idx}-${t}`} className="tf-toast" role="status">
+              {t}
+            </div>
+          ))}
+        </div>
+      ) : null}
     </header>
   )
 }
